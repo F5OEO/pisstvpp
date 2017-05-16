@@ -3,7 +3,7 @@
 // 2013 Robert Marshall KI4MCW
 // 2014 Gerrit Polder, PA3BYA fixed header. 
 // 2014 Don Gi Min, KM4EQR, more protocols and option handling
-
+//2017 Evariste F5OEO Add Rpitx output format
 // Note: Compile me thus:  gcc -lgd -lmagic -o sstvX sstvX.c
 
 // ===========
@@ -35,8 +35,9 @@
 #define MAXSAMPLES (300 * MAXRATE)
 
 // uncomment only one of these
-#define AUDIO_WAV
+//#define AUDIO_WAV
 //#define AUDIO_AIFF
+#define AUDIO_RPITX
 
 #define MAGIC_PNG ("PNG image data,")
 #define MAGIC_JPG ("JPEG image data")
@@ -58,7 +59,7 @@ uint8_t    g_protocol; //VIS ID's for SSTV protocols
 
 FILE *     g_imgfp ;
 FILE *     g_outfp ;
-gdImagePtr g_imgp ;
+gdImagePtr g_imgporigin,g_imgp ;
 uint16_t   g_rate;
 
 // ========
@@ -93,7 +94,7 @@ int main(int argc, char *argv[]) {
 
     char *protocol; 
 	int option;
-
+    char DefaultProtocol[]="m1";
     g_rate = RATE;
     while ((option = getopt(argc, argv, "r:p:")) != -1) {
         switch (option) {
@@ -126,7 +127,8 @@ int main(int argc, char *argv[]) {
         g_protocol = 8; //Robot 36
     }
     else {
-        printf("Unrecognized protocol option %s, defaulting to Martin 1...\n\n", protocol);
+        printf("Unrecognized protocol (available m1,m2,s1,s2,sdx,r36 option %s, defaulting to Martin 1...\n\n", protocol);
+        protocol=DefaultProtocol;
         g_protocol = 44;
     }
 
@@ -135,7 +137,7 @@ int main(int argc, char *argv[]) {
     uint32_t starttime = time(NULL) ;
     uint8_t ft ; 
     char inputfile[255], outputfile[255] ;
-    
+    int w,h; //Dimension picture target size depend on mode
     // string hygeine
     memset( inputfile  , 0 , 255 ) ;
     memset( outputfile , 0 , 255 ) ;
@@ -181,7 +183,11 @@ int main(int argc, char *argv[]) {
 #ifdef AUDIO_WAV    
     strcat( outputfile , ".wav" ) ;
 #endif
-    
+#ifdef AUDIO_RPITX
+    strcat( outputfile , "." ) ;    
+    strcat( outputfile , protocol ) ;    
+    strcat( outputfile , ".rf" ) ;
+#endif    
     printf( "Input  file is [%s].\n" , inputfile ) ;
     printf( "Output file is [%s].\n" , outputfile ) ;
     
@@ -192,17 +198,22 @@ int main(int argc, char *argv[]) {
     printf( "FILE ptrs opened.\n" ) ;
     
     if ( ft == FILETYPE_JPG ) 
-    { g_imgp = gdImageCreateFromJpeg( g_imgfp ) ; }
+    { g_imgporigin = gdImageCreateFromJpeg( g_imgfp ) ; }
     else if ( ft == FILETYPE_PNG ) 
-    { g_imgp = gdImageCreateFromPng( g_imgfp ) ; }
+    { g_imgporigin = gdImageCreateFromPng( g_imgfp ) ; }
     else {
         printf( "Some weird error!\n" ) ;
         return 3 ;
     }    
+    gdImageSetInterpolationMethod(g_imgporigin, GD_BILINEAR_FIXED);
     
-    printf( "Image ptr opened.\n" ) ;
-
+    w=320;
+    if(g_protocol!=8) //All the supported mode are 320*256 
+           h=256;
+    else // Robot36 is 320x240
+           h=240; 
     // go!
+    g_imgp = gdImageScale(g_imgporigin, w, h);
 
     addvisheader() ;
     
@@ -210,15 +221,19 @@ int main(int argc, char *argv[]) {
     switch (g_protocol) {
         case 44: //Martin 1
             buildaudio_m(457.6);
+                 
             break;
         case 40: //Martin 2
             buildaudio_m(228.8);
+           
             break;
         case 60: //Scottie 1
             buildaudio_s(432.0);
+           
             break;
         case 56: //Scottie 2
             buildaudio_s(275.2);
+           
             break;
         case 76: //Scottie DX
             buildaudio_s(1080.0);
@@ -232,7 +247,7 @@ int main(int argc, char *argv[]) {
             break;
     }
 
-
+    
     addvistrailer() ;
     
 #ifdef AUDIO_AIFF    
@@ -311,7 +326,7 @@ uint8_t filetype( char *filename ) {
 //             format of the output file is not determined until 
 //             the file is written, at the end of the process.
 //             Also, yes, a nod to Tom Hanks.
-
+#ifndef AUDIO_RPITX
 void playtone( uint16_t tonefreq , double tonedur ) {
     uint16_t tonesamples, voltage, i ;
     double   deltatheta ;
@@ -339,6 +354,25 @@ void playtone( uint16_t tonefreq , double tonedur ) {
     
     g_fudge = tonedur - ( tonesamples * g_uspersample ) ;
 }  // end playtone    
+#else
+
+
+void playtone( uint16_t tonefreq , double tonedur )
+{
+typedef struct {
+		double Frequency;
+		uint32_t WaitForThisSample;
+	} samplerf_t;
+	samplerf_t RfSample;
+	
+	RfSample.Frequency=tonefreq;
+	RfSample.WaitForThisSample=tonedur*1000L; //en 100 de nanosecond
+	//printf("Freq =%f Timing=%d\n",RfSample.Frequency,RfSample.WaitForThisSample);
+	if (fwrite(&RfSample,1,sizeof(samplerf_t),g_outfp) != sizeof(samplerf_t)) {
+		fprintf(stderr, "Unable to write sample");
+	}
+}
+#endif
 
 uint16_t toneval_rgb ( uint8_t colorval ) {
     return ( ( 800 * colorval ) / 256 ) + 1500 ;
